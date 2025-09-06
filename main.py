@@ -20,10 +20,52 @@ EMAIL_REGEX = r'\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b'
 
 # Invalid email patterns to exclude
 INVALID_PATTERNS = [
+    # File extensions and technical patterns
     r'.*\.(png|jpg|jpeg|gif|svg|webp|ico|css|js|pdf|doc|docx|zip|rar|exe)$',
     r'.*@(example\.com|test\.com|localhost|127\.0\.0\.1)',
     r'^[^@]*@[^@]*\.(png|jpg|jpeg|gif|svg|webp|ico|css|js|pdf)$',
     r'.*@.*\.(png|jpg|jpeg|gif|svg|webp|ico|css|js)$',
+    
+    # Generic/placeholder patterns (enhanced)
+    r'^abc@.*',
+    r'^test@.*',
+    r'^demo@.*',
+    r'^sample@.*',
+    r'^placeholder@.*',
+    r'^dummy@.*',
+    r'^fake@.*',
+    r'^example@.*',
+    r'^noreply@.*',
+    r'^no-reply@.*',
+    r'^donotreply@.*',
+    r'^do-not-reply@.*',
+    r'.*@abc\..*',
+    r'.*@xyz\..*',
+    r'.*@test\..*',
+    r'.*@demo\..*',
+    r'.*@sample\..*',
+    r'.*@placeholder\..*',
+    r'.*@dummy\..*',
+    r'.*@fake\..*',
+    r'.*@123\..*',
+    r'.*@456\..*',
+    r'.*@789\..*',
+    r'^(a|b|c|x|y|z|1|2|3)@(a|b|c|x|y|z|1|2|3)\..*',
+    r'^[a-z]{1,3}@[a-z]{1,3}\.(com|net|org)$',  # Short generic patterns like abc@xyz.com
+    
+    # Common placeholder domains
+    r'.*@(abc\.com|xyz\.com|test\.org|demo\.net)$',
+    r'.*@(sample\.com|placeholder\.org|dummy\.net)$',
+    r'.*@(foo\.com|bar\.com|baz\.com)$',
+    r'.*@(lorem\.com|ipsum\.com|dolor\.com)$',
+    
+    # Sequential/pattern emails (more specific)
+    r'^(user|admin|test)[0-9]+@.*',  # Only block if followed by numbers
+    r'^[a-z]+[0-9]+@[a-z]+[0-9]+\..*',
+    r'^(email|mail)[0-9]*@.*',
+    r'^(test|demo|sample)(user|admin|[0-9])*@.*',  # test1@, demouser@, etc.
+    
+    # Technical/system emails
     r'.*@sentry.*',
     r'.*@.*sentry.*',
     r'.*@ovh\.net$',
@@ -54,6 +96,11 @@ INVALID_PATTERNS = [
     r'.*@.*\.website\.com$',
     r'.*@yourwebsite\.com$',
     r'.*@.*gmail\.com$',  # Too many generic gmail addresses
+    
+    # Additional obvious fake patterns
+    r'^(asdf|qwerty|12345|abcde)@.*',
+    r'.*@(asdf|qwerty|12345|abcde)\..*',
+    r'^[a-z]{1,2}@[a-z]{1,2}\.(co|me|us|io)$',  # Very short domains
 ]
 
 class ExtractWorker(QThread):
@@ -261,14 +308,16 @@ class ExtractWorker(QThread):
         if '.' not in domain:
             return False
         
-        # Check for common spam/invalid domains and patterns
+        # Check for common spam/invalid domains and patterns (be more specific)
         spam_domains = [
             'noreply', 'no-reply', 'donotreply', 'example.com', 'test.com',
             'sentry', 'ovh.net', 'ovhcloud.com', 'wixpress.com', 'doctolib',
             'mssante.fr', 'apicrypt.org', 'prestashop.com', 'themeisle.com',
             'linkeo.com', 'tally.so', 'cal.com'
         ]
-        if any(spam in domain.lower() for spam in spam_domains):
+        # Only flag as spam if domain exactly matches or contains these specific patterns
+        if (domain.lower() in spam_domains or 
+            any(spam in domain.lower() and len(spam) > 3 for spam in spam_domains)):
             return False
         
         # Check for hash-like patterns (32+ hex characters)
@@ -282,6 +331,39 @@ class ExtractWorker(QThread):
             'nom@', 'votre@', 'your@', 'email@domain', 'user@mail'
         ]
         if any(test in email.lower() for test in test_patterns):
+            return False
+        
+        # Enhanced check for generic/placeholder patterns
+        local_lower = local.lower()
+        domain_lower = domain.lower()
+        
+        # Check for obvious placeholders (be more selective with 'info' and 'admin')
+        obvious_placeholders = ['abc', 'xyz', 'test', 'demo', 'sample', 'placeholder', 'dummy', 'fake']
+        generic_domains = ['abc.com', 'xyz.com', 'test.com', 'demo.com', 'sample.com', 'placeholder.com']
+        
+        if local_lower in obvious_placeholders or domain_lower in generic_domains:
+            return False
+        
+        # Check for very short local/domain combinations (likely placeholders)
+        if len(local) <= 3 and len(domain.split('.')[0]) <= 3:
+            return False
+        
+        # Check for sequential patterns (a@b.com, 1@2.com, etc.)
+        if (len(local) == 1 and len(domain.split('.')[0]) == 1 and 
+            local.isalpha() and domain.split('.')[0].isalpha()):
+            return False
+        
+        # Check for common keyboard patterns
+        keyboard_patterns = ['qwerty', 'asdf', 'zxcv', '12345', 'abcde']
+        if any(pattern in local_lower or pattern in domain_lower for pattern in keyboard_patterns):
+            return False
+        
+        # Check if local part is just repeated characters
+        if len(set(local_lower)) == 1 and len(local) > 1:  # aaaa@domain.com
+            return False
+        
+        # Check for info/admin only on obviously fake domains
+        if local_lower in ['info', 'admin'] and any(fake in domain_lower for fake in ['test', 'demo', 'sample', 'fake', 'dummy']):
             return False
         
         # Check for u003e prefix (encoded characters)
