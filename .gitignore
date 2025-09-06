@@ -21,6 +21,17 @@ wheels/
 *.egg
 MANIFEST
 
+# PyInstaller build artifacts
+*.spec
+build/
+dist/
+version_info.py
+BUILD_SUMMARY.md
+
+# Exclude exe files except in release folder
+*.exe
+!release/*.exe
+
 # Virtual Environment
 venv/
 env/
