@@ -335,8 +335,8 @@ class ExtractWorker(QThread):
 class EmailExtractorApp(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('Email Extractor from Domains')
-        self.resize(900, 700)
+        self.setWindowTitle('Email Extractor Pro - Advanced Domain Email Harvester')
+        self.resize(1000, 650)  # More compact height
         self.domains = []
         self.results = []
         self.tld_counts = {}
@@ -350,107 +350,433 @@ class EmailExtractorApp(QWidget):
 
     def init_ui(self):
         layout = QVBoxLayout()
-        
-        # File selection section
-        file_group = QGroupBox("Domain File Selection")
+        layout.setSpacing(8)
+        layout.setContentsMargins(12, 12, 12, 12)
+
+        # Modern title with gradient background
+        title = QLabel('🚀 Email Extractor Pro')
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("""
+            QLabel {
+                font-size: 22px;
+                font-weight: bold;
+                color: white;
+                margin: 8px 0;
+                padding: 12px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
+                            stop:0 #667eea, stop:1 #764ba2);
+                border-radius: 10px;
+                border: none;
+            }
+        """)
+        layout.addWidget(title)
+
+        # Compact file selection with modern styling
+        file_group = QGroupBox("📁 Domain File")
+        file_group.setStyleSheet("""
+            QGroupBox {
+                font-weight: bold;
+                font-size: 13px;
+                color: #2c3e50;
+                border: 2px solid #3498db;
+                border-radius: 8px;
+                margin: 3px 0;
+                padding-top: 8px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 8px;
+                padding: 0 4px;
+                color: #3498db;
+            }
+        """)
         file_layout = QVBoxLayout()
+        file_layout.setSpacing(6)
         
+        # File selection row
+        file_row = QHBoxLayout()
         self.file_label = QLabel('No file selected')
-        file_layout.addWidget(self.file_label)
-
-        file_btn_layout = QHBoxLayout()
-        self.browse_btn = QPushButton('Browse File')
+        self.file_label.setStyleSheet("""
+            QLabel {
+                padding: 6px 10px;
+                background-color: #f8f9fa;
+                border: 1px solid #dee2e6;
+                border-radius: 4px;
+                color: #6c757d;
+                font-size: 11px;
+            }
+        """)
+        
+        self.browse_btn = QPushButton('📂 Browse')
+        self.browse_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #3498db;
+                color: white;
+                border: none;
+                padding: 8px 15px;
+                border-radius: 5px;
+                font-weight: bold;
+                font-size: 11px;
+                min-width: 70px;
+            }
+            QPushButton:hover { background-color: #2980b9; }
+            QPushButton:pressed { background-color: #21618c; }
+        """)
         self.browse_btn.clicked.connect(self.browse_file)
-        file_btn_layout.addWidget(self.browse_btn)
-
-        self.validate_btn = QPushButton('Validate Domains')
+        
+        self.validate_btn = QPushButton('✓ Validate')
         self.validate_btn.setEnabled(False)
+        self.validate_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #28a745;
+                color: white;
+                border: none;
+                padding: 8px 15px;
+                border-radius: 5px;
+                font-weight: bold;
+                font-size: 11px;
+                min-width: 70px;
+            }
+            QPushButton:hover { background-color: #218838; }
+            QPushButton:disabled { background-color: #6c757d; }
+        """)
         self.validate_btn.clicked.connect(self.validate_domains)
-        file_btn_layout.addWidget(self.validate_btn)
         
-        file_layout.addLayout(file_btn_layout)
+        file_row.addWidget(self.file_label, 3)
+        file_row.addWidget(self.browse_btn)
+        file_row.addWidget(self.validate_btn)
+        file_layout.addLayout(file_row)
         
-        # Domain info section
-        self.domain_info = QLabel('')
-        file_layout.addWidget(self.domain_info)
-        
-        # Exclude patterns section
-        exclude_layout = QHBoxLayout()
-        exclude_layout.addWidget(QLabel('Exclude patterns:'))
+        # Exclude patterns (compact)
+        exclude_row = QHBoxLayout()
+        exclude_label = QLabel('Exclude:')
+        exclude_label.setStyleSheet("font-size: 11px; color: #6c757d; min-width: 50px;")
         self.exclude_input = QTextEdit()
-        self.exclude_input.setMaximumHeight(60)
-        self.exclude_input.setPlaceholderText('Enter domains/patterns to exclude (one per line)')
-        exclude_layout.addWidget(self.exclude_input)
-        file_layout.addLayout(exclude_layout)
+        self.exclude_input.setMaximumHeight(35)
+        self.exclude_input.setStyleSheet("""
+            QTextEdit {
+                border: 1px solid #ced4da;
+                border-radius: 4px;
+                padding: 4px;
+                font-size: 10px;
+                background-color: #ffffff;
+            }
+        """)
+        self.exclude_input.setPlaceholderText('Enter patterns to exclude (one per line)')
+        exclude_row.addWidget(exclude_label)
+        exclude_row.addWidget(self.exclude_input)
+        file_layout.addLayout(exclude_row)
         
         file_group.setLayout(file_layout)
         layout.addWidget(file_group)
 
-        # Control buttons section
-        control_group = QGroupBox("Processing Controls")
-        control_layout = QVBoxLayout()
+        # Side-by-side validation results and TLD stats
+        stats_row = QHBoxLayout()
+        stats_row.setSpacing(8)
         
-        btn_layout = QHBoxLayout()
-        self.start_btn = QPushButton('Start Extraction')
+        # Domain validation results (left side)
+        validation_group = QGroupBox("📊 Validation Results")
+        validation_group.setStyleSheet("""
+            QGroupBox {
+                font-weight: bold;
+                font-size: 13px;
+                color: #2c3e50;
+                border: 2px solid #28a745;
+                border-radius: 8px;
+                margin: 3px 0;
+                padding-top: 8px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 8px;
+                padding: 0 4px;
+                color: #28a745;
+            }
+        """)
+        validation_layout = QVBoxLayout()
+        self.domain_info = QLabel('')
+        self.domain_info.setStyleSheet("""
+            QLabel {
+                font-size: 10px;
+                color: #495057;
+                background-color: #f8f9fa;
+                border: 1px solid #dee2e6;
+                border-radius: 4px;
+                padding: 8px;
+                min-height: 80px;
+            }
+        """)
+        validation_layout.addWidget(self.domain_info)
+        validation_group.setLayout(validation_layout)
+        
+        # TLD distribution (right side)
+        tld_group = QGroupBox("🌐 TLD Distribution")
+        tld_group.setStyleSheet("""
+            QGroupBox {
+                font-weight: bold;
+                font-size: 13px;
+                color: #2c3e50;
+                border: 2px solid #fd7e14;
+                border-radius: 8px;
+                margin: 3px 0;
+                padding-top: 8px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 8px;
+                padding: 0 4px;
+                color: #fd7e14;
+            }
+        """)
+        tld_layout = QVBoxLayout()
+        self.tld_info = QLabel('Load domains to see TLD stats')
+        self.tld_info.setStyleSheet("""
+            QLabel {
+                font-size: 10px;
+                color: #495057;
+                background-color: #f8f9fa;
+                border: 1px solid #dee2e6;
+                border-radius: 4px;
+                padding: 8px;
+                min-height: 80px;
+            }
+        """)
+        tld_layout.addWidget(self.tld_info)
+        tld_group.setLayout(tld_layout)
+        
+        stats_row.addWidget(validation_group)
+        stats_row.addWidget(tld_group)
+        layout.addLayout(stats_row)
+
+        # Compact control panel
+        control_group = QGroupBox("🎮 Controls")
+        control_group.setStyleSheet("""
+            QGroupBox {
+                font-weight: bold;
+                font-size: 13px;
+                color: #2c3e50;
+                border: 2px solid #6f42c1;
+                border-radius: 8px;
+                margin: 3px 0;
+                padding-top: 8px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 8px;
+                padding: 0 4px;
+                color: #6f42c1;
+            }
+        """)
+        control_layout = QHBoxLayout()
+        control_layout.setSpacing(8)
+        
+        button_style = """
+            QPushButton {
+                border: none;
+                padding: 10px 15px;
+                border-radius: 6px;
+                font-weight: bold;
+                font-size: 11px;
+                min-width: 70px;
+            }
+        """
+        
+        self.start_btn = QPushButton('▶️ Start')
         self.start_btn.setEnabled(False)
+        self.start_btn.setStyleSheet(button_style + """
+            QPushButton {
+                background-color: #28a745;
+                color: white;
+            }
+            QPushButton:hover { background-color: #218838; }
+            QPushButton:disabled { background-color: #6c757d; }
+        """)
         self.start_btn.clicked.connect(self.start_extraction)
-        btn_layout.addWidget(self.start_btn)
 
-        self.pause_btn = QPushButton('Pause')
+        self.pause_btn = QPushButton('⏸️ Pause')
         self.pause_btn.setEnabled(False)
+        self.pause_btn.setStyleSheet(button_style + """
+            QPushButton {
+                background-color: #ffc107;
+                color: #212529;
+            }
+            QPushButton:hover { background-color: #e0a800; }
+            QPushButton:disabled { background-color: #6c757d; }
+        """)
         self.pause_btn.clicked.connect(self.pause_extraction)
-        btn_layout.addWidget(self.pause_btn)
 
-        self.resume_btn = QPushButton('Resume')
+        self.resume_btn = QPushButton('▶️ Resume')
         self.resume_btn.setEnabled(False)
+        self.resume_btn.setStyleSheet(button_style + """
+            QPushButton {
+                background-color: #17a2b8;
+                color: white;
+            }
+            QPushButton:hover { background-color: #138496; }
+            QPushButton:disabled { background-color: #6c757d; }
+        """)
         self.resume_btn.clicked.connect(self.resume_extraction)
-        btn_layout.addWidget(self.resume_btn)
 
-        self.stop_btn = QPushButton('Stop')
+        self.stop_btn = QPushButton('⏹️ Stop')
         self.stop_btn.setEnabled(False)
+        self.stop_btn.setStyleSheet(button_style + """
+            QPushButton {
+                background-color: #dc3545;
+                color: white;
+            }
+            QPushButton:hover { background-color: #c82333; }
+            QPushButton:disabled { background-color: #6c757d; }
+        """)
         self.stop_btn.clicked.connect(self.stop_extraction)
-        btn_layout.addWidget(self.stop_btn)
         
-        control_layout.addLayout(btn_layout)
+        control_layout.addWidget(self.start_btn)
+        control_layout.addWidget(self.pause_btn)
+        control_layout.addWidget(self.resume_btn)
+        control_layout.addWidget(self.stop_btn)
+        control_layout.addStretch()
         control_group.setLayout(control_layout)
         layout.addWidget(control_group)
 
-        # Progress section
-        progress_group = QGroupBox("Progress")
+        # Compact progress section
+        progress_group = QGroupBox("📈 Progress")
+        progress_group.setStyleSheet("""
+            QGroupBox {
+                font-weight: bold;
+                font-size: 13px;
+                color: #2c3e50;
+                border: 2px solid #e83e8c;
+                border-radius: 8px;
+                margin: 3px 0;
+                padding-top: 8px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 8px;
+                padding: 0 4px;
+                color: #e83e8c;
+            }
+        """)
         progress_layout = QVBoxLayout()
+        progress_layout.setSpacing(4)
         
         self.progress = QProgressBar()
+        self.progress.setStyleSheet("""
+            QProgressBar {
+                border: 2px solid #ced4da;
+                border-radius: 5px;
+                text-align: center;
+                font-weight: bold;
+                font-size: 10px;
+                height: 18px;
+            }
+            QProgressBar::chunk {
+                background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
+                                stop:0 #667eea, stop:1 #764ba2);
+                border-radius: 3px;
+            }
+        """)
         progress_layout.addWidget(self.progress)
 
+        status_row = QHBoxLayout()
         self.status = QLabel('')
-        progress_layout.addWidget(self.status)
-        
+        self.status.setStyleSheet("font-size: 11px; color: #495057;")
         self.speed_label = QLabel('')
-        progress_layout.addWidget(self.speed_label)
+        self.speed_label.setStyleSheet("font-size: 11px; color: #495057;")
+        status_row.addWidget(self.status)
+        status_row.addStretch()
+        status_row.addWidget(self.speed_label)
+        progress_layout.addLayout(status_row)
         
         progress_group.setLayout(progress_layout)
         layout.addWidget(progress_group)
 
-        # Results section
-        results_group = QGroupBox("Results")
+        # Compact results section
+        results_group = QGroupBox("📧 Results")
+        results_group.setStyleSheet("""
+            QGroupBox {
+                font-weight: bold;
+                font-size: 13px;
+                color: #2c3e50;
+                border: 2px solid #20c997;
+                border-radius: 8px;
+                margin: 3px 0;
+                padding-top: 8px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 8px;
+                padding: 0 4px;
+                color: #20c997;
+            }
+        """)
         results_layout = QVBoxLayout()
+        results_layout.setSpacing(6)
         
         self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(['Domain', 'Email', 'Source URL'])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.setStyleSheet("""
+            QTableWidget {
+                gridline-color: #dee2e6;
+                background-color: white;
+                alternate-background-color: #f8f9fa;
+                font-size: 10px;
+            }
+            QHeaderView::section {
+                background-color: #e9ecef;
+                color: #495057;
+                padding: 6px;
+                border: 1px solid #dee2e6;
+                font-weight: bold;
+                font-size: 10px;
+            }
+        """)
+        self.table.setAlternatingRowColors(True)
         results_layout.addWidget(self.table)
 
-        # Export section
+        # Compact export section
         export_layout = QHBoxLayout()
-        self.export_excel_btn = QPushButton('Export to Excel')
-        self.export_excel_btn.setEnabled(False)
-        self.export_excel_btn.clicked.connect(self.export_to_excel)
-        export_layout.addWidget(self.export_excel_btn)
+        export_layout.setSpacing(8)
         
-        self.export_txt_btn = QPushButton('Export to Text')
+        self.export_excel_btn = QPushButton('📊 Export Excel')
+        self.export_excel_btn.setEnabled(False)
+        self.export_excel_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #198754;
+                color: white;
+                border: none;
+                padding: 8px 15px;
+                border-radius: 5px;
+                font-weight: bold;
+                font-size: 11px;
+                min-width: 90px;
+            }
+            QPushButton:hover { background-color: #157347; }
+            QPushButton:disabled { background-color: #6c757d; }
+        """)
+        self.export_excel_btn.clicked.connect(self.export_to_excel)
+        
+        self.export_txt_btn = QPushButton('📄 Export Text')
         self.export_txt_btn.setEnabled(False)
+        self.export_txt_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #6f42c1;
+                color: white;
+                border: none;
+                padding: 8px 15px;
+                border-radius: 5px;
+                font-weight: bold;
+                font-size: 11px;
+                min-width: 90px;
+            }
+            QPushButton:hover { background-color: #5a32a3; }
+            QPushButton:disabled { background-color: #6c757d; }
+        """)
         self.export_txt_btn.clicked.connect(self.export_to_text)
+        
+        export_layout.addWidget(self.export_excel_btn)
         export_layout.addWidget(self.export_txt_btn)
+        export_layout.addStretch()
         
         results_layout.addLayout(export_layout)
         results_group.setLayout(results_layout)
@@ -538,18 +864,22 @@ class EmailExtractorApp(QWidget):
         # Sort TLDs by count
         top_tlds = sorted(tld_stats.items(), key=lambda x: x[1], reverse=True)[:10]
         
-        info_text = f"""Domain Validation Results:
-✅ Valid domains: {valid_count:,}
+        info_text = f"""✅ Valid: {valid_count:,}
 ❌ Invalid/Excluded: {invalid_count:,}
 🔄 Duplicates removed: {duplicate_count:,}
 📊 Total processed: {total_original:,}
 
-Top TLDs:
-{chr(10).join([f'{tld}: {count:,}' for tld, count in top_tlds])}
-
-Estimated processing time: {self.estimate_processing_time(valid_count)}"""
+⏱️ Est. time: {self.estimate_processing_time(valid_count)}"""
         
         self.domain_info.setText(info_text)
+        
+        # Update TLD info separately
+        if top_tlds:
+            tld_text = "Top TLDs found:\n\n" + "\n".join([f"• .{tld}: {count:,}" for tld, count in top_tlds])
+        else:
+            tld_text = "No TLD data available"
+        
+        self.tld_info.setText(tld_text)
         
         if invalid_count > 0 or duplicate_count > 0:
             reply = QMessageBox.question(
@@ -606,6 +936,10 @@ Estimated processing time: {self.estimate_processing_time(valid_count)}"""
             self.pause_btn.setEnabled(False)
             self.resume_btn.setEnabled(False)
             self.stop_btn.setEnabled(False)
+            # Enable export buttons for partial results
+            if self.results:
+                self.export_excel_btn.setEnabled(True)
+                self.export_txt_btn.setEnabled(True)
             self.status.setText('Stopping processing...')
 
     def start_extraction(self):
@@ -662,6 +996,10 @@ Estimated processing time: {self.estimate_processing_time(valid_count)}"""
             self.pause_btn.setEnabled(False)
             self.resume_btn.setEnabled(False)
             self.stop_btn.setEnabled(False)
+            # Enable export buttons for any results (including partial)
+            if self.results:
+                self.export_excel_btn.setEnabled(True)
+                self.export_txt_btn.setEnabled(True)
 
     def update_table_live(self, results):
         """Update the table with live results as they come in"""
@@ -825,6 +1163,53 @@ Estimated processing time: {self.estimate_processing_time(valid_count)}"""
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
+    
+    # Set modern application style
+    app.setStyle('Fusion')
+    
+    # Global application stylesheet for consistent modern look
+    app.setStyleSheet("""
+        QApplication {
+            font-family: 'Segoe UI', Arial, sans-serif;
+        }
+        QWidget {
+            background-color: #ffffff;
+            color: #212529;
+        }
+        QScrollBar:vertical {
+            background-color: #f8f9fa;
+            width: 12px;
+            border-radius: 6px;
+        }
+        QScrollBar::handle:vertical {
+            background-color: #6c757d;
+            border-radius: 6px;
+            min-height: 20px;
+        }
+        QScrollBar::handle:vertical:hover {
+            background-color: #495057;
+        }
+        QScrollBar:horizontal {
+            background-color: #f8f9fa;
+            height: 12px;
+            border-radius: 6px;
+        }
+        QScrollBar::handle:horizontal {
+            background-color: #6c757d;
+            border-radius: 6px;
+            min-width: 20px;
+        }
+        QScrollBar::handle:horizontal:hover {
+            background-color: #495057;
+        }
+    """)
+    
     window = EmailExtractorApp()
     window.show()
+    
+    # Center the window on screen
+    screen = app.primaryScreen().availableGeometry()
+    window.move((screen.width() - window.width()) // 2, 
+                (screen.height() - window.height()) // 2)
+    
     sys.exit(app.exec_())
