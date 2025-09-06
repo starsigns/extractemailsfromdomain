@@ -5,12 +5,14 @@ import asyncio
 import aiohttp
 import re
 from datetime import datetime
+from collections import defaultdict
 from bs4 import BeautifulSoup
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QPushButton, QLabel, QFileDialog,
-    QProgressBar, QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView, QHBoxLayout
+    QProgressBar, QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView, 
+    QHBoxLayout, QTextEdit, QCheckBox, QSpinBox, QGroupBox, QComboBox
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 
@@ -56,10 +58,11 @@ INVALID_PATTERNS = [
 
 class ExtractWorker(QThread):
     progress = pyqtSignal(int, int)
-    result = pyqtSignal(list)
+    result = pyqtSignal(list, dict)  # results, tld_counts
     status = pyqtSignal(str)
     auto_save = pyqtSignal()
     partial_results = pyqtSignal(list)
+    speed_update = pyqtSignal(float, str)  # emails/min, time remaining
 
     def __init__(self, domains, auto_export_path=None):
         super().__init__()
@@ -67,9 +70,24 @@ class ExtractWorker(QThread):
         self.results = []
         self.auto_export_path = auto_export_path
         self.processed_count = 0
-        self.seen_emails = set()  # Track unique emails per domain
+        self.seen_emails = set()
+        self.tld_counts = defaultdict(int)
+        self.paused = False
+        self.stopped = False
+        self.start_time = None
+
+    def pause(self):
+        self.paused = True
+
+    def resume(self):
+        self.paused = False
+
+    def stop(self):
+        self.stopped = True
+        self.paused = False
 
     def run(self):
+        self.start_time = datetime.now()
         asyncio.run(self.async_run())
 
     async def async_run(self):
@@ -85,12 +103,36 @@ class ExtractWorker(QThread):
             update_frequency = 2  # Update GUI every 2 batches to reduce hanging
             
             for i in range(0, len(self.domains), batch_size):
+                # Check for pause/stop
+                while self.paused and not self.stopped:
+                    await asyncio.sleep(0.1)
+                
+                if self.stopped:
+                    break
+                
                 batch = self.domains[i:i+batch_size]
                 # Process batch domains concurrently
                 tasks = [self.process_domain(session, domain) for domain in batch]
                 await asyncio.gather(*tasks, return_exceptions=True)
                 
                 current_progress = min(i + batch_size, len(self.domains))
+                
+                # Calculate speed and ETA
+                if self.start_time:
+                    elapsed = (datetime.now() - self.start_time).total_seconds()
+                    if elapsed > 0:
+                        emails_per_sec = len(self.results) / elapsed
+                        emails_per_min = emails_per_sec * 60
+                        
+                        remaining_domains = len(self.domains) - current_progress
+                        if current_progress > 0:
+                            avg_time_per_domain = elapsed / current_progress
+                            eta_seconds = remaining_domains * avg_time_per_domain
+                            eta_str = f"{int(eta_seconds//3600)}h {int((eta_seconds%3600)//60)}m"
+                        else:
+                            eta_str = "Calculating..."
+                        
+                        self.speed_update.emit(emails_per_min, eta_str)
                 
                 # Only update GUI every few batches to prevent hanging
                 if (i // batch_size) % update_frequency == 0 or current_progress >= len(self.domains):
@@ -101,8 +143,11 @@ class ExtractWorker(QThread):
                 if self.auto_export_path and current_progress % 500 == 0:
                     self.auto_save.emit()
                     
-            self.result.emit(self.results)
-            self.status.emit('Extraction complete!')
+            if not self.stopped:
+                self.result.emit(self.results, dict(self.tld_counts))
+                self.status.emit('Extraction complete!')
+            else:
+                self.status.emit('Extraction stopped by user')
 
     async def process_domain(self, session, domain):
         url = domain if domain.startswith('http') else f'http://{domain}'
@@ -118,6 +163,12 @@ class ExtractWorker(QThread):
                         self.seen_emails.add(email_domain_key)
                         self.results.append({'domain': domain, 'email': email, 'source_url': url})
                         domain_emails.add(email)
+                        
+                        # Track TLD
+                        email_domain = email.split('@')[1].lower()
+                        if '.' in email_domain:
+                            tld = email_domain.split('.')[-1]
+                            self.tld_counts[tld] += 1
                 
                 # Extract and process only priority links (faster filtering)
                 links = self.extract_priority_links(html, url)
@@ -135,6 +186,12 @@ class ExtractWorker(QThread):
                                     self.seen_emails.add(email_domain_key)
                                     self.results.append({'domain': domain, 'email': email, 'source_url': source_url})
                                     domain_emails.add(email)
+                                    
+                                    # Track TLD
+                                    email_domain = email.split('@')[1].lower()
+                                    if '.' in email_domain:
+                                        tld = email_domain.split('.')[-1]
+                                        self.tld_counts[tld] += 1
         except Exception:
             pass
 
@@ -279,49 +336,246 @@ class EmailExtractorApp(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle('Email Extractor from Domains')
-        self.resize(700, 500)
+        self.resize(900, 700)
         self.domains = []
         self.results = []
+        self.tld_counts = {}
         self.worker = None
         self.pending_results = []
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.process_pending_updates)
         self.update_timer.setSingleShot(True)
+        self.exclude_patterns = []
         self.init_ui()
 
     def init_ui(self):
         layout = QVBoxLayout()
+        
+        # File selection section
+        file_group = QGroupBox("Domain File Selection")
+        file_layout = QVBoxLayout()
+        
         self.file_label = QLabel('No file selected')
-        layout.addWidget(self.file_label)
+        file_layout.addWidget(self.file_label)
 
-        btn_layout = QHBoxLayout()
+        file_btn_layout = QHBoxLayout()
         self.browse_btn = QPushButton('Browse File')
         self.browse_btn.clicked.connect(self.browse_file)
-        btn_layout.addWidget(self.browse_btn)
+        file_btn_layout.addWidget(self.browse_btn)
 
+        self.validate_btn = QPushButton('Validate Domains')
+        self.validate_btn.setEnabled(False)
+        self.validate_btn.clicked.connect(self.validate_domains)
+        file_btn_layout.addWidget(self.validate_btn)
+        
+        file_layout.addLayout(file_btn_layout)
+        
+        # Domain info section
+        self.domain_info = QLabel('')
+        file_layout.addWidget(self.domain_info)
+        
+        # Exclude patterns section
+        exclude_layout = QHBoxLayout()
+        exclude_layout.addWidget(QLabel('Exclude patterns:'))
+        self.exclude_input = QTextEdit()
+        self.exclude_input.setMaximumHeight(60)
+        self.exclude_input.setPlaceholderText('Enter domains/patterns to exclude (one per line)')
+        exclude_layout.addWidget(self.exclude_input)
+        file_layout.addLayout(exclude_layout)
+        
+        file_group.setLayout(file_layout)
+        layout.addWidget(file_group)
+
+        # Control buttons section
+        control_group = QGroupBox("Processing Controls")
+        control_layout = QVBoxLayout()
+        
+        btn_layout = QHBoxLayout()
         self.start_btn = QPushButton('Start Extraction')
         self.start_btn.setEnabled(False)
         self.start_btn.clicked.connect(self.start_extraction)
         btn_layout.addWidget(self.start_btn)
-        layout.addLayout(btn_layout)
 
+        self.pause_btn = QPushButton('Pause')
+        self.pause_btn.setEnabled(False)
+        self.pause_btn.clicked.connect(self.pause_extraction)
+        btn_layout.addWidget(self.pause_btn)
+
+        self.resume_btn = QPushButton('Resume')
+        self.resume_btn.setEnabled(False)
+        self.resume_btn.clicked.connect(self.resume_extraction)
+        btn_layout.addWidget(self.resume_btn)
+
+        self.stop_btn = QPushButton('Stop')
+        self.stop_btn.setEnabled(False)
+        self.stop_btn.clicked.connect(self.stop_extraction)
+        btn_layout.addWidget(self.stop_btn)
+        
+        control_layout.addLayout(btn_layout)
+        control_group.setLayout(control_layout)
+        layout.addWidget(control_group)
+
+        # Progress section
+        progress_group = QGroupBox("Progress")
+        progress_layout = QVBoxLayout()
+        
         self.progress = QProgressBar()
-        layout.addWidget(self.progress)
+        progress_layout.addWidget(self.progress)
 
         self.status = QLabel('')
-        layout.addWidget(self.status)
+        progress_layout.addWidget(self.status)
+        
+        self.speed_label = QLabel('')
+        progress_layout.addWidget(self.speed_label)
+        
+        progress_group.setLayout(progress_layout)
+        layout.addWidget(progress_group)
 
+        # Results section
+        results_group = QGroupBox("Results")
+        results_layout = QVBoxLayout()
+        
         self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(['Domain', 'Email', 'Source URL'])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        layout.addWidget(self.table)
+        results_layout.addWidget(self.table)
 
-        self.export_btn = QPushButton('Export to Excel')
-        self.export_btn.setEnabled(False)
-        self.export_btn.clicked.connect(self.export_results)
-        layout.addWidget(self.export_btn)
+        # Export section
+        export_layout = QHBoxLayout()
+        self.export_excel_btn = QPushButton('Export to Excel')
+        self.export_excel_btn.setEnabled(False)
+        self.export_excel_btn.clicked.connect(self.export_to_excel)
+        export_layout.addWidget(self.export_excel_btn)
+        
+        self.export_txt_btn = QPushButton('Export to Text')
+        self.export_txt_btn.setEnabled(False)
+        self.export_txt_btn.clicked.connect(self.export_to_text)
+        export_layout.addWidget(self.export_txt_btn)
+        
+        results_layout.addLayout(export_layout)
+        results_group.setLayout(results_layout)
+        layout.addWidget(results_group)
 
         self.setLayout(layout)
+
+    def validate_domain(self, domain):
+        """Validate a single domain format"""
+        domain = domain.strip().lower()
+        if not domain:
+            return False, "Empty domain"
+        
+        # Remove protocol if present
+        if domain.startswith(('http://', 'https://')):
+            domain = domain.split('://', 1)[1]
+        
+        # Remove path if present
+        if '/' in domain:
+            domain = domain.split('/')[0]
+        
+        # Basic domain validation
+        if not re.match(r'^[a-zA-Z0-9][a-zA-Z0-9.-]*[a-zA-Z0-9]$', domain):
+            return False, "Invalid format"
+        
+        if '..' in domain or domain.startswith('.') or domain.endswith('.'):
+            return False, "Invalid format"
+        
+        if '.' not in domain:
+            return False, "Missing TLD"
+        
+        return True, domain
+
+    def validate_domains(self):
+        """Validate and clean domain list"""
+        if not self.domains:
+            return
+        
+        valid_domains = []
+        invalid_domains = []
+        duplicates = set()
+        seen = set()
+        
+        # Get exclude patterns
+        exclude_text = self.exclude_input.toPlainText().strip()
+        self.exclude_patterns = [p.strip().lower() for p in exclude_text.split('\n') if p.strip()]
+        
+        for domain in self.domains:
+            is_valid, result = self.validate_domain(domain)
+            
+            if is_valid:
+                clean_domain = result
+                
+                # Check against exclude patterns
+                excluded = False
+                for pattern in self.exclude_patterns:
+                    if pattern in clean_domain:
+                        excluded = True
+                        break
+                
+                if excluded:
+                    invalid_domains.append(f"{domain} (excluded)")
+                elif clean_domain in seen:
+                    duplicates.add(clean_domain)
+                else:
+                    valid_domains.append(clean_domain)
+                    seen.add(clean_domain)
+            else:
+                invalid_domains.append(f"{domain} ({result})")
+        
+        self.domains = valid_domains
+        
+        # Show validation results
+        total_original = len(self.domains) + len(invalid_domains) + len(duplicates)
+        valid_count = len(valid_domains)
+        invalid_count = len(invalid_domains)
+        duplicate_count = len(duplicates)
+        
+        # Categorize by TLD
+        tld_stats = {}
+        for domain in valid_domains:
+            tld = domain.split('.')[-1]
+            tld_stats[tld] = tld_stats.get(tld, 0) + 1
+        
+        # Sort TLDs by count
+        top_tlds = sorted(tld_stats.items(), key=lambda x: x[1], reverse=True)[:10]
+        
+        info_text = f"""Domain Validation Results:
+✅ Valid domains: {valid_count:,}
+❌ Invalid/Excluded: {invalid_count:,}
+🔄 Duplicates removed: {duplicate_count:,}
+📊 Total processed: {total_original:,}
+
+Top TLDs:
+{chr(10).join([f'{tld}: {count:,}' for tld, count in top_tlds])}
+
+Estimated processing time: {self.estimate_processing_time(valid_count)}"""
+        
+        self.domain_info.setText(info_text)
+        
+        if invalid_count > 0 or duplicate_count > 0:
+            reply = QMessageBox.question(
+                self, 'Validation Results',
+                f"Found {invalid_count} invalid and {duplicate_count} duplicate domains.\n"
+                f"Continue with {valid_count} valid domains?",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if reply == QMessageBox.No:
+                return
+        
+        self.start_btn.setEnabled(len(self.domains) > 0)
+
+    def estimate_processing_time(self, domain_count):
+        """Estimate processing time based on domain count"""
+        # Rough estimate: ~3-5 seconds per domain with current optimizations
+        avg_time_per_domain = 4  # seconds
+        total_seconds = domain_count * avg_time_per_domain
+        
+        hours = int(total_seconds // 3600)
+        minutes = int((total_seconds % 3600) // 60)
+        
+        if hours > 0:
+            return f"~{hours}h {minutes}m"
+        else:
+            return f"~{minutes}m"
 
     def browse_file(self):
         file_path, _ = QFileDialog.getOpenFileName(self, 'Open file', '', 'Text Files (*.txt)')
@@ -329,12 +583,38 @@ class EmailExtractorApp(QWidget):
             self.file_label.setText(os.path.basename(file_path))
             with open(file_path, 'r', encoding='utf-8') as f:
                 self.domains = [line.strip() for line in f if line.strip()]
-            self.start_btn.setEnabled(True)
-            self.status.setText(f'{len(self.domains)} domains loaded.')
+            self.validate_btn.setEnabled(True)
+            self.status.setText(f'{len(self.domains):,} domains loaded. Click "Validate Domains" to check quality.')
+
+    def pause_extraction(self):
+        if self.worker:
+            self.worker.pause()
+            self.pause_btn.setEnabled(False)
+            self.resume_btn.setEnabled(True)
+            self.status.setText('Processing paused...')
+
+    def resume_extraction(self):
+        if self.worker:
+            self.worker.resume()
+            self.pause_btn.setEnabled(True)
+            self.resume_btn.setEnabled(False)
+            self.status.setText('Processing resumed...')
+
+    def stop_extraction(self):
+        if self.worker:
+            self.worker.stop()
+            self.pause_btn.setEnabled(False)
+            self.resume_btn.setEnabled(False)
+            self.stop_btn.setEnabled(False)
+            self.status.setText('Stopping processing...')
 
     def start_extraction(self):
         self.start_btn.setEnabled(False)
-        self.export_btn.setEnabled(False)
+        self.pause_btn.setEnabled(True)
+        self.resume_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
+        self.export_excel_btn.setEnabled(False)
+        self.export_txt_btn.setEnabled(False)
         self.progress.setValue(0)
         self.progress.setMaximum(len(self.domains))
         self.status.setText('Starting extraction...')
@@ -349,24 +629,39 @@ class EmailExtractorApp(QWidget):
         self.worker.result.connect(self.show_results)
         self.worker.status.connect(self.update_status)
         self.worker.partial_results.connect(self.update_table_live)
+        self.worker.speed_update.connect(self.update_speed)
         self.worker.auto_save.connect(lambda: self.auto_save_results(auto_export_path))
         self.worker.start()
+
+    def update_speed(self, emails_per_min, eta):
+        self.speed_label.setText(f'Speed: {emails_per_min:.1f} emails/min | ETA: {eta}')
 
     def update_progress(self, value, maximum):
         self.progress.setValue(value)
         self.progress.setMaximum(maximum)
-        self.status.setText(f'Processed {value}/{maximum} domains | Found {len(self.results)} emails')
+        self.status.setText(f'Processed {value:,}/{maximum:,} domains | Found {len(self.results):,} emails')
 
-    def show_results(self, results):
+    def show_results(self, results, tld_counts=None):
         self.results = results
+        if tld_counts:
+            self.tld_counts = tld_counts
         # Force final update without timer
         self.pending_results = results
         self.process_pending_updates()
-        self.export_btn.setEnabled(True)
+        self.export_excel_btn.setEnabled(True)
+        self.export_txt_btn.setEnabled(True)
+        self.start_btn.setEnabled(True)
+        self.pause_btn.setEnabled(False)
+        self.resume_btn.setEnabled(False)
+        self.stop_btn.setEnabled(False)
 
     def update_status(self, text):
         self.status.setText(text)
-        self.start_btn.setEnabled(True)
+        if 'complete' in text.lower() or 'stopped' in text.lower():
+            self.start_btn.setEnabled(True)
+            self.pause_btn.setEnabled(False)
+            self.resume_btn.setEnabled(False)
+            self.stop_btn.setEnabled(False)
 
     def update_table_live(self, results):
         """Update the table with live results as they come in"""
@@ -411,11 +706,20 @@ class EmailExtractorApp(QWidget):
             self.save_to_excel(file_path, self.results)
             self.status.setText(f'Auto-saved {len(self.results)} results to {os.path.basename(file_path)} | Processed {self.progress.value()}/{self.progress.maximum()} domains')
 
-    def export_results(self):
+    def export_to_excel(self):
         file_path, _ = QFileDialog.getSaveFileName(self, 'Save File', '', 'Excel Files (*.xlsx)')
         if file_path:
             self.save_to_excel(file_path, self.results)
             QMessageBox.information(self, 'Export', f'Results exported to {file_path}')
+
+    def export_to_text(self):
+        file_path, _ = QFileDialog.getSaveFileName(self, 'Save File', '', 'Text Files (*.txt)')
+        if file_path:
+            unique_emails = set(result['email'] for result in self.results)
+            with open(file_path, 'w', encoding='utf-8') as f:
+                for email in sorted(unique_emails):
+                    f.write(f'{email}\n')
+            QMessageBox.information(self, 'Export', f'{len(unique_emails):,} unique emails exported to {file_path}')
 
     def save_to_excel(self, file_path, results):
         wb = Workbook()
@@ -461,9 +765,14 @@ class EmailExtractorApp(QWidget):
         
         # Domain statistics
         domain_counts = {}
+        tld_counts = {}
         for result in results:
             domain = result['domain']
             domain_counts[domain] = domain_counts.get(domain, 0) + 1
+            
+            # Extract TLD
+            tld = domain.split('.')[-1] if '.' in domain else 'unknown'
+            tld_counts[tld] = tld_counts.get(tld, 0) + 1
         
         # Summary headers and data
         summary_data = [
@@ -481,6 +790,16 @@ class EmailExtractorApp(QWidget):
         top_domains = sorted(domain_counts.items(), key=lambda x: x[1], reverse=True)[:10]
         for domain, count in top_domains:
             summary_data.append([domain, count])
+        
+        # Add TLD distribution
+        summary_data.extend([
+            ['', ''],
+            ['TLD Distribution', ''],
+        ])
+        
+        top_tlds = sorted(tld_counts.items(), key=lambda x: x[1], reverse=True)[:15]
+        for tld, count in top_tlds:
+            summary_data.append([f'.{tld}', count])
         
         # Write summary data
         for row, (label, value) in enumerate(summary_data, 1):
