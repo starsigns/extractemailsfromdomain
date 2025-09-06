@@ -18,6 +18,72 @@ from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 
 EMAIL_REGEX = r'\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b'
 
+# Obfuscated email patterns for detection and de-obfuscation
+OBFUSCATED_PATTERNS = [
+    # Common obfuscation patterns with their replacements (improved order and precision)
+    (r'\b([a-zA-Z0-9._%+-]+)\s+at\s+([a-zA-Z0-9.-]+)\s+dot\s+([a-zA-Z]{2,})\b', r'\1@\2.\3'),
+    (r'\b([a-zA-Z0-9._%+-]+)\s*\[at\]\s*([a-zA-Z0-9.-]+)\s*\[dot\]\s*([a-zA-Z]{2,})\b', r'\1@\2.\3'),
+    (r'\b([a-zA-Z0-9._%+-]+)\s*\(at\)\s*([a-zA-Z0-9.-]+)\s*\(dot\)\s*([a-zA-Z]{2,})\b', r'\1@\2.\3'),
+    (r'\b([a-zA-Z0-9._%+-]+)\s*\{at\}\s*([a-zA-Z0-9.-]+)\s*\{dot\}\s*([a-zA-Z]{2,})\b', r'\1@\2.\3'),
+    (r'\b([a-zA-Z0-9._%+-]+)\s*<at>\s*([a-zA-Z0-9.-]+)\s*<dot>\s*([a-zA-Z]{2,})\b', r'\1@\2.\3'),
+    
+    # HTML entity obfuscation
+    (r'\b([a-zA-Z0-9._%+-]+)\s*&#64;\s*([a-zA-Z0-9.-]+)\s*&#46;\s*([a-zA-Z]{2,})\b', r'\1@\2.\3'),
+    (r'\b([a-zA-Z0-9._%+-]+)\s*&\#64;\s*([a-zA-Z0-9.-]+)\s*&\#46;\s*([a-zA-Z]{2,})\b', r'\1@\2.\3'),
+    (r'\b([a-zA-Z0-9._%+-]+)\s*&\#x40;\s*([a-zA-Z0-9.-]+)\s*&\#x2E;\s*([a-zA-Z]{2,})\b', r'\1@\2.\3'),
+    
+    # Spaced obfuscation (more specific)
+    (r'\b([a-zA-Z0-9._%+-]+)\s+@\s+([a-zA-Z0-9.-]+)\s+\.\s+([a-zA-Z]{2,})\b', r'\1@\2.\3'),
+    
+    # Underscore/dash obfuscation
+    (r'\b([a-zA-Z0-9._%+-]+)\s*_at_\s*([a-zA-Z0-9.-]+)\s*_dot_\s*([a-zA-Z]{2,})\b', r'\1@\2.\3'),
+    (r'\b([a-zA-Z0-9._%+-]+)\s*-at-\s*([a-zA-Z0-9.-]+)\s*-dot-\s*([a-zA-Z]{2,})\b', r'\1@\2.\3'),
+    (r'\b([a-zA-Z0-9._%+-]+)\s*\+at\+\s*([a-zA-Z0-9.-]+)\s*\+dot\+\s*([a-zA-Z]{2,})\b', r'\1@\2.\3'),
+    (r'\b([a-zA-Z0-9._%+-]+)\s*\*at\*\s*([a-zA-Z0-9.-]+)\s*\*dot\*\s*([a-zA-Z]{2,})\b', r'\1@\2.\3'),
+    
+    # Multi-language obfuscation
+    (r'\b([a-zA-Z0-9._%+-]+)\s+arroba\s+([a-zA-Z0-9.-]+)\s+punto\s+([a-zA-Z]{2,})\b', r'\1@\2.\3'),  # Spanish
+    (r'\b([a-zA-Z0-9._%+-]+)\s+arobase\s+([a-zA-Z0-9.-]+)\s+point\s+([a-zA-Z]{2,})\b', r'\1@\2.\3'),  # French
+]
+
+# Additional simple obfuscation replacements
+SIMPLE_OBFUSCATIONS = {
+    ' at ': '@',
+    ' AT ': '@',
+    '[at]': '@',
+    '[AT]': '@',
+    '(at)': '@',
+    '(AT)': '@',
+    '{at}': '@',
+    '{AT}': '@',
+    '<at>': '@',
+    '<AT>': '@',
+    '_at_': '@',
+    '-at-': '@',
+    '+at+': '@',
+    '*at*': '@',
+    ' dot ': '.',
+    ' DOT ': '.',
+    '[dot]': '.',
+    '[DOT]': '.',
+    '(dot)': '.',
+    '(DOT)': '.',
+    '{dot}': '.',
+    '{DOT}': '.',
+    '<dot>': '.',
+    '<DOT>': '.',
+    '_dot_': '.',
+    '-dot-': '.',
+    '+dot+': '.',
+    '*dot*': '.',
+    '&#64;': '@',
+    '&#46;': '.',
+    '&#x40;': '@',
+    '&#x2E;': '.',
+    '&amp;#64;': '@',
+    '&amp;#46;': '.',
+}
+
 # Invalid email patterns to exclude
 INVALID_PATTERNS = [
     # File extensions and technical patterns
@@ -62,8 +128,8 @@ INVALID_PATTERNS = [
     # Sequential/pattern emails (more specific)
     r'^(user|admin|test)[0-9]+@.*',  # Only block if followed by numbers
     r'^[a-z]+[0-9]+@[a-z]+[0-9]+\..*',
-    r'^(email|mail)[0-9]*@.*',
-    r'^(test|demo|sample)(user|admin|[0-9])*@.*',  # test1@, demouser@, etc.
+    r'^(email|mail)[0-9]+@.*',  # Only with numbers
+    r'^(test|demo|sample)(user|admin|[0-9])+@.*',  # test1@, demouser@, etc.
     
     # Technical/system emails
     r'.*@sentry.*',
@@ -262,23 +328,118 @@ class ExtractWorker(QThread):
         return set(), url
 
     def extract_emails(self, html):
-        # Use faster regex with compiled pattern
+        # Use faster regex with compiled pattern for regular emails
         if not hasattr(self, '_email_pattern'):
             self._email_pattern = re.compile(EMAIL_REGEX, re.IGNORECASE)
         
-        raw_emails = set(self._email_pattern.findall(html))
         valid_emails = set()
         
+        # 1. Extract regular emails first
+        raw_emails = set(self._email_pattern.findall(html))
         for email in raw_emails:
             email = email.lower().strip()
-            # Basic validation checks
             if self.is_valid_email(email):
                 valid_emails.add(email)
-                # Limit emails per page for speed
-                if len(valid_emails) >= 20:
-                    break
         
-        return valid_emails
+        # 2. Extract obfuscated emails
+        obfuscated_emails = self.extract_obfuscated_emails(html)
+        for email in obfuscated_emails:
+            if self.is_valid_email(email):
+                valid_emails.add(email)
+        
+        # Limit emails per page for speed
+        return set(list(valid_emails)[:25])  # Increased from 20 to 25 due to obfuscation
+
+    def extract_obfuscated_emails(self, text):
+        """Extract and de-obfuscate hidden email addresses"""
+        obfuscated_emails = set()
+        
+        # 1. First, try complex patterns on original text (before simple replacements)
+        for pattern, replacement in OBFUSCATED_PATTERNS:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            for match in matches:
+                if isinstance(match, tuple) and len(match) >= 3:
+                    # Reconstruct email from captured groups
+                    email = f"{match[0].strip()}@{match[1].strip()}.{match[2].strip()}"
+                    # Validate the reconstructed email
+                    if re.match(EMAIL_REGEX, email, re.IGNORECASE):
+                        obfuscated_emails.add(email.lower())
+        
+        # 2. Apply targeted simple replacements (only in email-like contexts)
+        working_text = text
+        
+        # First, let's look for email-like patterns and replace them carefully
+        # Pattern: word + obfuscated @ + word + obfuscated . + word
+        email_context_patterns = [
+            (r'\b([a-zA-Z0-9._%+-]+)\s*\[at\]\s*([a-zA-Z0-9.-]+)\s*\[dot\]\s*([a-zA-Z]{2,})\b', r'\1@\2.\3'),
+            (r'\b([a-zA-Z0-9._%+-]+)\s*\(at\)\s*([a-zA-Z0-9.-]+)\s*\(dot\)\s*([a-zA-Z]{2,})\b', r'\1@\2.\3'),
+            (r'\b([a-zA-Z0-9._%+-]+)\s*\{at\}\s*([a-zA-Z0-9.-]+)\s*\{dot\}\s*([a-zA-Z]{2,})\b', r'\1@\2.\3'),
+            (r'\b([a-zA-Z0-9._%+-]+)\s*<at>\s*([a-zA-Z0-9.-]+)\s*<dot>\s*([a-zA-Z]{2,})\b', r'\1@\2.\3'),
+        ]
+        
+        for pattern, replacement in email_context_patterns:
+            working_text = re.sub(pattern, replacement, working_text, flags=re.IGNORECASE)
+        
+        # Handle HTML entities
+        working_text = working_text.replace('&#64;', '@').replace('&#46;', '.')
+        working_text = working_text.replace('&#x40;', '@').replace('&#x2E;', '.')
+        
+        # 3. Look for newly formed emails after targeted replacements
+        if not hasattr(self, '_email_pattern'):
+            self._email_pattern = re.compile(EMAIL_REGEX, re.IGNORECASE)
+        
+        new_emails = set(self._email_pattern.findall(working_text))
+        for email in new_emails:
+            email = email.lower().strip()
+            # Only add if it passes validation and isn't already found
+            if email not in obfuscated_emails and re.match(EMAIL_REGEX, email, re.IGNORECASE):
+                obfuscated_emails.add(email)
+        
+        # 4. Handle special cases like base64 encoded or other encodings
+        obfuscated_emails.update(self.extract_encoded_emails(text))
+        
+        return obfuscated_emails
+
+    def extract_encoded_emails(self, text):
+        """Extract emails from encoded content (base64, URL encoding, etc.)"""
+        encoded_emails = set()
+        
+        # Look for base64 encoded emails (common obfuscation)
+        import base64
+        
+        # Find potential base64 strings that might contain emails
+        base64_pattern = r'[A-Za-z0-9+/]{20,}={0,2}'
+        base64_matches = re.findall(base64_pattern, text)
+        
+        for match in base64_matches:
+            try:
+                # Attempt to decode
+                decoded = base64.b64decode(match).decode('utf-8', errors='ignore')
+                # Look for emails in decoded content
+                if '@' in decoded and '.' in decoded:
+                    potential_emails = re.findall(EMAIL_REGEX, decoded, re.IGNORECASE)
+                    for email in potential_emails:
+                        encoded_emails.add(email.lower().strip())
+            except:
+                continue
+        
+        # Look for URL encoded emails
+        import urllib.parse
+        url_encoded_pattern = r'[a-zA-Z0-9%]{10,}'
+        url_matches = re.findall(url_encoded_pattern, text)
+        
+        for match in url_matches:
+            if '%' in match:
+                try:
+                    decoded = urllib.parse.unquote(match)
+                    if '@' in decoded and '.' in decoded:
+                        potential_emails = re.findall(EMAIL_REGEX, decoded, re.IGNORECASE)
+                        for email in potential_emails:
+                            encoded_emails.add(email.lower().strip())
+                except:
+                    continue
+        
+        return encoded_emails
 
     def is_valid_email(self, email):
         # Check against invalid patterns
