@@ -497,13 +497,15 @@ class EmailExtractorApp(QWidget):
         self.domain_info = QLabel('')
         self.domain_info.setStyleSheet("""
             QLabel {
-                font-size: 10px;
-                color: #495057;
+                font-size: 12px;
+                font-weight: 500;
+                color: #2c3e50;
                 background-color: #f8f9fa;
                 border: 1px solid #dee2e6;
                 border-radius: 4px;
-                padding: 8px;
-                min-height: 80px;
+                padding: 10px;
+                min-height: 110px;
+                line-height: 1.4;
             }
         """)
         validation_layout.addWidget(self.domain_info)
@@ -532,15 +534,19 @@ class EmailExtractorApp(QWidget):
         self.tld_info = QLabel('Load domains to see TLD stats')
         self.tld_info.setStyleSheet("""
             QLabel {
-                font-size: 10px;
-                color: #495057;
+                font-size: 11px;
+                font-weight: 500;
+                font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+                color: #2c3e50;
                 background-color: #f8f9fa;
                 border: 1px solid #dee2e6;
                 border-radius: 4px;
-                padding: 8px;
-                min-height: 80px;
+                padding: 10px;
+                min-height: 110px;
+                line-height: 1.3;
             }
         """)
+        self.tld_info.setWordWrap(True)
         tld_layout.addWidget(self.tld_info)
         tld_group.setLayout(tld_layout)
         
@@ -873,11 +879,31 @@ class EmailExtractorApp(QWidget):
         
         self.domain_info.setText(info_text)
         
-        # Update TLD info separately
+        # Update TLD info in a compact, multi-column format
         if top_tlds:
-            tld_text = "Top TLDs found:\n\n" + "\n".join([f"• .{tld}: {count:,}" for tld, count in top_tlds])
+            # Split TLDs into two columns for better space utilization
+            mid_point = (len(top_tlds) + 1) // 2
+            left_column = top_tlds[:mid_point]
+            right_column = top_tlds[mid_point:]
+            
+            tld_lines = []
+            for i in range(max(len(left_column), len(right_column))):
+                left_item = f".{left_column[i][0]}: {left_column[i][1]:,}" if i < len(left_column) else ""
+                right_item = f".{right_column[i][0]}: {right_column[i][1]:,}" if i < len(right_column) else ""
+                
+                # Format line with proper spacing (adjust spacing for better alignment)
+                if left_item and right_item:
+                    line = f"{left_item:<18} {right_item}"
+                elif left_item:
+                    line = left_item
+                else:
+                    line = f"{'':18} {right_item}"
+                
+                tld_lines.append(line)
+            
+            tld_text = "Top TLD Extensions:\n\n" + "\n".join(tld_lines)
         else:
-            tld_text = "No TLD data available"
+            tld_text = "Load and validate domains\nto see TLD statistics"
         
         self.tld_info.setText(tld_text)
         
